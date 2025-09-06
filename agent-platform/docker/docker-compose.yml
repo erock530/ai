@@ -1,0 +1,187 @@
+version: '3.8'
+
+volumes:
+  n8n_storage:
+  postgres_storage:
+  ollama_storage:
+  qdrant_storage:
+  open-webui:
+  flowise:
+
+networks:
+  ai_platform:
+    name: ai_platform
+
+x-common-variables: &common-variables
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  POSTGRES_DB: ${POSTGRES_DB}
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    networks: ['ai_platform']
+    restart: unless-stopped
+    container_name: open-webui
+    ports:
+      - "3000:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+    volumes:
+      - open-webui:/app/backend/data
+
+  n8n:
+    image: n8nio/n8n:latest
+    networks: ['ai_platform']
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_PERSONALIZATION_ENABLED=false
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET}
+      - N8N_METRICS=true
+      - N8N_HIRING_THROTTLE_MAX=50
+      - N8N_HIRING_THROTTLE_TIME=2000
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+    volumes:
+      - n8n_storage:/home/node/.n8n
+      - ./backup:/backup
+      - ./shared:/data/shared
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    networks: ['ai_platform']
+    restart: unless-stopped
+    container_name: postgres
+    environment:
+      <<: *common-variables
+    ports:
+      - "5432:5432"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+    command: 
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "work_mem=2621kB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+    volumes:
+      - postgres_storage:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant
+    container_name: qdrant
+    networks: ['ai_platform']
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  flowise:
+    image: flowiseai/flowise
+    networks: ['ai_platform']
+    restart: unless-stopped
+    container_name: flowise
+    environment:
+      - PORT=3001
+    ports:
+      - "3001:3001"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+    volumes:
+      - ~/.flowise:/root/.flowise
+    entrypoint: /bin/sh -c "sleep 3; flowise start"
+
+  x-ollama: &service-ollama
+    image: ollama/ollama:latest
+    networks: ['ai_platform']
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+    volumes:
+      - ollama_storage:/root/.ollama
+
+  ollama-cpu:
+    profiles: ["cpu"]
+    <<: *service-ollama
+    container_name: ollama-cpu
+    environment:
+      - OLLAMA_MODELS_PATH=/models
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_CONCURRENT_SLOTS=5
+
+  ollama-gpu:
+    profiles: ["gpu-nvidia"]
+    <<: *service-ollama
+    container_name: ollama-gpu
+    environment:
+      - OLLAMA_MODELS_PATH=/models
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_CONCURRENT_SLOTS=5
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  ollama-pull-llama:
+    image: ollama/ollama:latest
+    networks: ['ai_platform']
+    container_name: ollama-pull-llama
+    volumes:
+      - ollama_storage:/root/.ollama
+    entrypoint: /bin/sh
+    command:
+      - "-c"
+      - "sleep 3; OLLAMA_HOST=ollama:11434 ollama pull llama3.1; OLLAMA_HOST=ollama:11434 ollama pull nomic-embed-text"
+    profiles: ["cpu", "gpu-nvidia"]
+    depends_on:
+      - ollama-cpu
+      - ollama-gpu
