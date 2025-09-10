@@ -1,0 +1,11 @@
+# python 3.11.9
+
+Flask
+requests
+python-dotenv==1.0.1
+openai==1.38.0
+pandas==2.2.2
+google-api-python-client==2.139.0
+google==3.0.0
+google-generativeai
+anthropic

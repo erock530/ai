@@ -1,0 +1,31 @@
+version: '3.8'
+services:
+  db:
+    build: ./db
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    restart: always
+    networks:
+      - backend
+
+  api:
+    build: ./api
+    depends_on:
+      - db
+    env_file:
+      - .env
+    restart: always
+    networks:
+      - backend
+    ports:
+      - "5000:5000"
+
+networks:
+  backend:
+
+volumes:
+  db_data:
